@@ -169,6 +169,7 @@ class CodexAdapter(BaseCLIAdapter):
 
         Codex --json outputs JSONL events. Common patterns:
         - {"type": "message", "content": "text"}
+        - {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
         - Final response in last message event
 
         Args:
@@ -186,11 +187,19 @@ class CodexAdapter(BaseCLIAdapter):
             try:
                 data = json.loads(line)
 
-                # Look for message content
+                # Look for message content (legacy format)
                 if data.get("type") == "message":
                     content = data.get("content", "")
                     if content:
                         message_contents.append(content)
+
+                # Look for item.completed events with agent_message (new streaming format)
+                if data.get("type") == "item.completed":
+                    item = data.get("item", {})
+                    if item.get("type") == "agent_message":
+                        text = item.get("text", "")
+                        if text:
+                            message_contents.append(text)
 
                 # Look for response/result fields
                 for key in ["response", "result", "text", "output", "content"]:

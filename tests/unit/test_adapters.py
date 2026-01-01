@@ -237,6 +237,28 @@ class TestCodexAdapter:
         assert not result.startswith(" ")
         assert not result.endswith(" ")
 
+    def test_parse_streaming_json_item_completed(self):
+        """Test parsing of item.completed streaming JSON events.
+
+        Codex CLI with --json outputs JSONL events including:
+        {"type":"item.completed","item":{"type":"agent_message","text":"response text"}}
+        """
+        adapter = CodexAdapter(args=["exec", "--model", "{model}", "{prompt}"])
+
+        # Simulate real Codex streaming JSON output
+        raw_output = """{"type":"thread.started","thread_id":"test-123"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Thinking..."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"2+2=4.\\n\\nVOTE: {\\"option\\": \\"4\\", \\"confidence\\": 1.0}"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"""
+
+        result = adapter.parse_output(raw_output)
+
+        # Should extract text from agent_message item
+        assert "2+2=4" in result
+        assert "VOTE:" in result
+        assert "option" in result
+
 
 class TestGeminiAdapter:
     """Tests for GeminiAdapter."""
