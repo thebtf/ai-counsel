@@ -410,18 +410,19 @@ class BaseCLIAdapter(ABC):
                         break
 
         except Exception as e:
-            logger.error(f"Error reading streaming output: {e}")
+            logger.exception(f"Error reading streaming output: {e}")
             raise
         finally:
+            # Unconditional cleanup to prevent process/task leaks on any exception
             if timed_out:
-                # Kill the process on timeout
+                # Kill immediately on timeout
                 try:
                     process.kill()
                 except ProcessLookupError:
                     pass
                 stderr_task.cancel()
             else:
-                # Wait for stderr to finish
+                # Wait for stderr to finish gracefully
                 try:
                     await asyncio.wait_for(stderr_task, timeout=5.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
