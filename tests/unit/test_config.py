@@ -27,7 +27,7 @@ class TestConfigLoading:
         claude = config.cli_tools["claude"]
         assert claude.command == "claude"
         assert isinstance(claude.args, list)
-        assert claude.timeout == 60  # Reduced from 300s for faster fail-fast
+        assert claude.timeout == 300  # Extended for thinking models
 
     def test_defaults_loaded(self):
         """Test default settings are loaded."""
@@ -561,17 +561,17 @@ class TestDecisionGraphConfig:
         # Verify it's a string, not a Path object
         assert isinstance(config.db_path, str), "db_path should be returned as string"
 
-    def test_db_path_absolute_unchanged(self, project_root):
+    def test_db_path_absolute_unchanged(self, project_root, tmp_path):
         """
         Test that absolute paths are kept unchanged.
 
-        Verifies that absolute paths like "/tmp/graph.db" are not modified
-        and remain absolute after validation. Note: symlinks are NOT resolved
-        for absolute paths (only relative paths get .resolve() called).
+        Uses tmp_path for cross-platform absolute paths. Note: symlinks are NOT
+        resolved for absolute paths (only relative paths get .resolve() called).
         """
         from models.config import DecisionGraphConfig
 
-        absolute_path = "/tmp/test_graph.db"
+        # Use tmp_path for platform-appropriate absolute path
+        absolute_path = str(tmp_path / "test_graph.db")
         config = DecisionGraphConfig(enabled=True, db_path=absolute_path)
 
         # Should still be absolute
@@ -583,24 +583,23 @@ class TestDecisionGraphConfig:
             config.db_path == absolute_path
         ), f"Absolute path should be preserved unchanged"
 
-    def test_db_path_with_env_var(self, project_root, monkeypatch):
+    def test_db_path_with_env_var(self, project_root, monkeypatch, tmp_path):
         """
         Test that environment variables are resolved before path resolution.
 
-        Verifies that "${DATA_DIR}/graph.db" first resolves the env var,
-        then converts the path to absolute if needed. Absolute paths after
+        Uses tmp_path for cross-platform absolute paths. Absolute paths after
         env var resolution are NOT further resolved (no symlink resolution).
         """
         from models.config import DecisionGraphConfig
 
-        # Set up test environment variable with absolute path
-        test_data_dir = "/var/data"
+        # Set up test environment variable with platform-appropriate absolute path
+        test_data_dir = str(tmp_path / "data")
         monkeypatch.setenv("TEST_DATA_DIR", test_data_dir)
 
         config = DecisionGraphConfig(enabled=True, db_path="${TEST_DATA_DIR}/graph.db")
 
         # Should resolve env var and path is already absolute (no further resolution)
-        expected_path = "/var/data/graph.db"
+        expected_path = str(Path(test_data_dir) / "graph.db")
         assert (
             config.db_path == expected_path
         ), f"Expected {expected_path}, got {config.db_path}"

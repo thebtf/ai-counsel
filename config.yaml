@@ -14,7 +14,7 @@ cli_tools:
         "{prompt}",
       ]
     timeout: 300  # Total maximum time
-    activity_timeout: 60  # Resets on each output chunk - allows long responses while catching hangs
+    activity_timeout: 180  # Extended for thinking models - first token may take 2-3 min
     # Valid models: "sonnet", "opus", "haiku" or full names like "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929"
     # Note: -p flag is auto-removed during deliberations for full engagement
 
