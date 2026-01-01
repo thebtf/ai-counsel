@@ -12,7 +12,6 @@ def create_mock_process(
     stdout_data: bytes = b"",
     stderr_data: bytes = b"",
     returncode: int = 0,
-    timeout_on_read: bool = False,
     hang_on_read: bool = False,
 ) -> Mock:
     """
@@ -25,7 +24,6 @@ def create_mock_process(
         stdout_data: Data to return from stdout
         stderr_data: Data to return from stderr
         returncode: Process return code
-        timeout_on_read: If True, raise TimeoutError on read (deprecated, use hang_on_read)
         hang_on_read: If True, read() blocks forever (triggers activity timeout)
 
     Returns:
@@ -44,8 +42,6 @@ def create_mock_process(
             # Block forever - will be cancelled by activity timeout
             await asyncio.sleep(3600)  # 1 hour, will be cancelled
             return b""
-        if timeout_on_read:
-            raise asyncio.TimeoutError()
         if not stdout_read_called[0]:
             stdout_read_called[0] = True
             return stdout_data
@@ -63,8 +59,6 @@ def create_mock_process(
             # Block forever - will be cancelled by activity timeout
             await asyncio.sleep(3600)  # 1 hour, will be cancelled
             return b""
-        if timeout_on_read:
-            raise asyncio.TimeoutError()
         if not stderr_read_called[0]:
             stderr_read_called[0] = True
             return stderr_data

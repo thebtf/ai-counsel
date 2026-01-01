@@ -250,7 +250,7 @@ class BaseCLIAdapter(ABC):
         Returns:
             Tuple of (stdout_bytes, stderr_bytes, timed_out_flag)
         """
-        timeout = activity_timeout if activity_timeout is not None else self.timeout
+        timeout = activity_timeout if activity_timeout is not None else self.activity_timeout
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
         timed_out = False
