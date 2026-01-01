@@ -44,7 +44,7 @@ class BaseCLIAdapter(ABC):
         Args:
             command: CLI command to execute
             args: List of argument templates (may contain {model}, {prompt} placeholders)
-            timeout: Timeout in seconds (default: 60) - total maximum time
+            timeout: Timeout in seconds (default: 60) - used as fallback for activity_timeout
             activity_timeout: Inactivity timeout in seconds. Resets on each output chunk.
                 If None, falls back to timeout. Useful for reasoning models that
                 produce output incrementally.
@@ -199,7 +199,7 @@ class BaseCLIAdapter(ABC):
                 return self.parse_output(raw_output)
 
             except (asyncio.TimeoutError, TimeoutError) as e:
-                logger.error(
+                logger.exception(
                     f"CLI invocation timed out: command={self.command}, "
                     f"model={model}, activity_timeout={self.activity_timeout}s"
                 )
@@ -245,12 +245,12 @@ class BaseCLIAdapter(ABC):
             process: The running subprocess
             model: Model identifier (for logging)
             activity_timeout: Seconds of inactivity before timeout.
-                Defaults to self.timeout if not specified.
+                Defaults to self.activity_timeout if not specified.
 
         Returns:
             Tuple of (stdout_bytes, stderr_bytes, timed_out_flag)
         """
-        timeout = activity_timeout if activity_timeout is not None else self.activity_timeout
+        effective_timeout = activity_timeout if activity_timeout is not None else self.activity_timeout
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
         timed_out = False
@@ -282,14 +282,14 @@ class BaseCLIAdapter(ABC):
             while pending:
                 done, pending = await asyncio.wait(
                     pending,
-                    timeout=timeout,
+                    timeout=effective_timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if not done:
                     # Timeout with no activity
                     timed_out = True
                     logger.warning(
-                        f"Activity timeout: no output from {model} for {timeout}s"
+                        f"Activity timeout: no output from {model} for {effective_timeout}s"
                     )
                     # Cancel remaining tasks
                     for task in pending:
