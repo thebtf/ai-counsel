@@ -175,6 +175,7 @@ def create_adapter(
             timeout=config.timeout,
             activity_timeout=config.activity_timeout,
             default_reasoning_effort=config.default_reasoning_effort,
+            use_streaming=config.use_streaming,
         )
 
     elif isinstance(config, HTTPAdapterConfig):
@@ -196,6 +197,8 @@ def create_adapter(
                 responses_api_prefixes=config.responses_api_prefixes,
                 max_output_tokens=config.max_output_tokens,
                 max_completion_tokens=config.max_completion_tokens,
+                use_streaming=config.use_streaming,
+                activity_timeout=config.activity_timeout,
             )
 
         return http_adapters[name](
@@ -204,6 +207,8 @@ def create_adapter(
             max_retries=config.max_retries,
             api_key=config.api_key,
             headers=config.headers,
+            use_streaming=config.use_streaming,
+            activity_timeout=config.activity_timeout,
         )
 
     else:

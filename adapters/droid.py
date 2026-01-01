@@ -25,6 +25,7 @@ class DroidAdapter(BaseCLIAdapter):
         timeout: int = 60,
         activity_timeout: Optional[int] = None,
         default_reasoning_effort: Optional[str] = None,
+        use_streaming: bool = False,
     ):
         """
         Initialize Droid adapter.
@@ -36,6 +37,8 @@ class DroidAdapter(BaseCLIAdapter):
             activity_timeout: Inactivity timeout in seconds (resets on output)
             default_reasoning_effort: Default reasoning effort level (off/low/medium/high).
                 Can be overridden per-participant at invocation time.
+            use_streaming: Ignored (Droid doesn't support streaming JSON output).
+                Kept for API consistency with other adapters.
 
         Note:
             The droid CLI uses `droid exec "prompt"` syntax for non-interactive mode.
@@ -51,6 +54,7 @@ class DroidAdapter(BaseCLIAdapter):
             timeout=timeout,
             activity_timeout=activity_timeout,
             default_reasoning_effort=default_reasoning_effort,
+            use_streaming=False,  # Droid doesn't support streaming
         )
         self._successful_method: Optional[Literal["skip-permissions"]] = None
 

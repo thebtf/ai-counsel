@@ -37,6 +37,7 @@ class BaseCLIAdapter(ABC):
         activity_timeout: Optional[int] = None,
         max_retries: int = 2,
         default_reasoning_effort: Optional[str] = None,
+        use_streaming: bool = False,
     ):
         """
         Initialize CLI adapter.
@@ -45,13 +46,17 @@ class BaseCLIAdapter(ABC):
             command: CLI command to execute
             args: List of argument templates (may contain {model}, {prompt} placeholders)
             timeout: Timeout in seconds (default: 60) - used as fallback for activity_timeout
-            activity_timeout: Inactivity timeout in seconds. Resets on each output chunk.
-                If None, falls back to timeout. Useful for reasoning models that
-                produce output incrementally.
+            activity_timeout: Inactivity timeout in seconds. Resets on each output chunk/line.
+                If None, falls back to timeout. When use_streaming=True, resets on each
+                line received (more reliable heartbeat). When use_streaming=False, resets
+                on each chunk read.
             max_retries: Maximum retry attempts for transient errors (default: 2)
             default_reasoning_effort: Default reasoning effort level for this adapter.
                 Only applicable to codex (low/medium/high/extra-high) and droid (off/low/medium/high).
                 Ignored by other adapters. Can be overridden per-participant.
+            use_streaming: If True, use line-by-line streaming reader with heartbeat
+                on each line. Recommended for CLIs that support streaming JSON output
+                (Claude, Codex, Gemini). Provides more reliable hang detection.
         """
         self.command = command
         self.args = args
@@ -59,6 +64,7 @@ class BaseCLIAdapter(ABC):
         self.activity_timeout = activity_timeout if activity_timeout is not None else timeout
         self.max_retries = max_retries
         self.default_reasoning_effort = default_reasoning_effort
+        self.use_streaming = use_streaming
 
     async def invoke(
         self,
@@ -152,8 +158,17 @@ class BaseCLIAdapter(ABC):
                     cwd=cwd,
                 )
 
-                # Use activity-based timeout: resets on each output chunk
-                stdout, stderr, timed_out = await self._read_with_activity_timeout(process, model)
+                # Choose reader based on streaming mode
+                if self.use_streaming:
+                    # Streaming mode: reset timeout on each LINE (more reliable heartbeat)
+                    stdout, stderr, timed_out = await self._read_streaming_with_heartbeat(
+                        process, model
+                    )
+                else:
+                    # Chunk mode: reset timeout on each 4KB chunk
+                    stdout, stderr, timed_out = await self._read_with_activity_timeout(
+                        process, model
+                    )
 
                 if timed_out:
                     raise TimeoutError(
@@ -317,6 +332,117 @@ class BaseCLIAdapter(ABC):
                 pass
 
         return b"".join(stdout_chunks), b"".join(stderr_chunks), timed_out
+
+    async def _read_streaming_with_heartbeat(
+        self,
+        process: asyncio.subprocess.Process,
+        model: str,
+        activity_timeout: Optional[int] = None,
+    ) -> tuple[bytes, bytes, bool]:
+        """
+        Read process output line-by-line with heartbeat-based timeout.
+
+        Unlike chunk-based reading, this resets the timeout on EACH LINE received.
+        This is ideal for streaming JSON output where each line is a heartbeat
+        indicating the model is still working.
+
+        Use this method when the CLI supports streaming output modes like:
+        - Claude: --output-format stream-json
+        - Codex: --json (JSONL events)
+        - Gemini: --output-format stream-json
+
+        Args:
+            process: The running subprocess
+            model: Model identifier (for logging)
+            activity_timeout: Seconds of inactivity before timeout.
+                Defaults to self.activity_timeout if not specified.
+
+        Returns:
+            Tuple of (stdout_bytes, stderr_bytes, timed_out_flag)
+        """
+        effective_timeout = activity_timeout if activity_timeout is not None else self.activity_timeout
+        stdout_lines: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        timed_out = False
+        lines_received = 0
+
+        async def read_stderr(stream: Optional[asyncio.StreamReader]) -> None:
+            """Read all stderr (non-streaming, just collect)."""
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+
+        # Start stderr reader in background (doesn't need heartbeat)
+        stderr_task = asyncio.create_task(read_stderr(process.stderr))
+
+        try:
+            # Read stdout line-by-line with timeout reset on each line
+            if process.stdout is not None:
+                while True:
+                    try:
+                        # Wait for next line with timeout
+                        line = await asyncio.wait_for(
+                            process.stdout.readline(),
+                            timeout=effective_timeout,
+                        )
+                        if not line:
+                            # EOF reached
+                            break
+                        stdout_lines.append(line)
+                        lines_received += 1
+
+                        # Log heartbeat every 10 lines to avoid spam
+                        if lines_received % 10 == 0:
+                            logger.debug(
+                                f"Streaming heartbeat: {model} - {lines_received} lines received"
+                            )
+                    except asyncio.TimeoutError:
+                        # No line received within timeout
+                        timed_out = True
+                        logger.warning(
+                            f"Streaming timeout: no output from {model} for {effective_timeout}s "
+                            f"(after {lines_received} lines)"
+                        )
+                        break
+
+        except Exception as e:
+            logger.exception(f"Error reading streaming output: {e}")
+            raise
+        finally:
+            # Unconditional cleanup to prevent process/task leaks on any exception
+            if timed_out:
+                # Kill immediately on timeout
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                stderr_task.cancel()
+            else:
+                # Wait for stderr to finish gracefully
+                try:
+                    await asyncio.wait_for(stderr_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    stderr_task.cancel()
+
+            # Always ensure process cleanup (prevents leaks on non-timeout exceptions)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+        logger.info(
+            f"Streaming read complete: {model} - {lines_received} lines, "
+            f"timed_out={timed_out}"
+        )
+
+        return b"".join(stdout_lines), b"".join(stderr_chunks), timed_out
 
     def _adjust_args_for_context(self, is_deliberation: bool) -> list[str]:
         """
