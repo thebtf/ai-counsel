@@ -26,6 +26,14 @@ class CLIAdapterConfig(BaseModel):
             "that produce output incrementally (e.g., reasoning models with thinking tokens)."
         ),
     )
+    use_streaming: bool = Field(
+        default=True,
+        description=(
+            "Enable streaming mode for reliable heartbeat detection. "
+            "When True, CLI adapters use streaming JSON output flags and reset "
+            "timeout on each line received. Recommended for reasoning models."
+        ),
+    )
     default_reasoning_effort: Optional[str] = Field(
         default=None,
         description=(
@@ -49,6 +57,14 @@ class HTTPAdapterConfig(BaseModel):
         description=(
             "Inactivity timeout in seconds for streaming responses. "
             "Resets each time a chunk is received. If None, falls back to 'timeout'."
+        ),
+    )
+    use_streaming: bool = Field(
+        default=True,
+        description=(
+            "Enable streaming mode for reliable heartbeat detection. "
+            "When True, HTTP adapters use SSE streaming and reset timeout on each event. "
+            "Recommended for OpenAI-compatible APIs with long-running requests."
         ),
     )
     max_retries: int = 3

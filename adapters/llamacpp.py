@@ -44,6 +44,7 @@ class LlamaCppAdapter(BaseCLIAdapter):
         activity_timeout: int | None = None,
         search_paths: list[str] | None = None,
         default_reasoning_effort: str | None = None,
+        use_streaming: bool = False,
     ):
         """
         Initialize llama.cpp adapter with auto-discovery.
@@ -55,6 +56,8 @@ class LlamaCppAdapter(BaseCLIAdapter):
             activity_timeout: Inactivity timeout in seconds (resets on output)
             search_paths: Custom search paths for models (uses DEFAULT_SEARCH_PATHS if None)
             default_reasoning_effort: Ignored (llama.cpp doesn't support reasoning effort)
+            use_streaming: Ignored (llama.cpp outputs raw text, not structured JSON).
+                Kept for API consistency with other adapters.
 
         Raises:
             ValueError: If args is not provided
@@ -67,6 +70,7 @@ class LlamaCppAdapter(BaseCLIAdapter):
             timeout=timeout,
             activity_timeout=activity_timeout,
             default_reasoning_effort=default_reasoning_effort,
+            use_streaming=False,  # llama.cpp doesn't support streaming JSON
         )
         self.search_paths = search_paths or self.DEFAULT_SEARCH_PATHS
 

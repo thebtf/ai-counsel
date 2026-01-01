@@ -64,6 +64,11 @@ class BaseHTTPAdapter(ABC):
     and error handling. Subclasses must implement build_request() and parse_response()
     for API-specific logic.
 
+    Supports streaming mode for OpenAI-compatible APIs:
+    - When use_streaming=True, sets stream=true in request
+    - Reads SSE events line-by-line with activity-based timeout
+    - Each event resets the timeout (heartbeat pattern)
+
     Example:
         class MyAdapter(BaseHTTPAdapter):
             def build_request(self, model, prompt):
@@ -72,7 +77,7 @@ class BaseHTTPAdapter(ABC):
             def parse_response(self, response_json):
                 return response_json["text"]
 
-        adapter = MyAdapter(base_url="http://localhost:8080", timeout=60)
+        adapter = MyAdapter(base_url="http://localhost:8080", timeout=60, use_streaming=True)
         result = await adapter.invoke(prompt="Hello", model="my-model")
     """
 
@@ -83,6 +88,8 @@ class BaseHTTPAdapter(ABC):
         max_retries: int = 3,
         api_key: Optional[str] = None,
         headers: Optional[dict[str, str]] = None,
+        use_streaming: bool = False,
+        activity_timeout: Optional[int] = None,
     ):
         """
         Initialize HTTP adapter.
@@ -93,12 +100,19 @@ class BaseHTTPAdapter(ABC):
             max_retries: Maximum retry attempts for transient failures (default: 3)
             api_key: Optional API key for authentication
             headers: Optional default headers to include in all requests
+            use_streaming: If True, use streaming mode with SSE events.
+                Each SSE event acts as a heartbeat, resetting the activity timeout.
+                Recommended for OpenAI-compatible APIs with long-running requests.
+            activity_timeout: Seconds of inactivity before timeout when streaming.
+                Only used when use_streaming=True. Defaults to timeout if not set.
         """
         self.base_url = base_url.rstrip("/")  # Remove trailing slash
         self.timeout = timeout
         self.max_retries = max_retries
         self.api_key = api_key
         self.default_headers = headers or {}
+        self.use_streaming = use_streaming
+        self.activity_timeout = activity_timeout if activity_timeout is not None else timeout
 
     @abstractmethod
     def build_request(
@@ -169,6 +183,10 @@ class BaseHTTPAdapter(ABC):
         # Get request components from subclass
         endpoint, request_headers, body = self.build_request(model, full_prompt)
 
+        # Enable streaming in request body if streaming mode is active
+        if self.use_streaming:
+            body["stream"] = True
+
         # Merge default headers with request-specific headers (request takes precedence)
         headers = {**self.default_headers, **request_headers}
 
@@ -180,28 +198,45 @@ class BaseHTTPAdapter(ABC):
         body_str = json.dumps(body, default=str)
 
         # Enhanced progress logging
-        progress_logger.info(f"[START] HTTP REQUEST | Model: {model} | URL: {full_url}")
+        streaming_mode = "STREAMING" if self.use_streaming else "STANDARD"
+        progress_logger.info(
+            f"[START] HTTP REQUEST ({streaming_mode}) | Model: {model} | URL: {full_url}"
+        )
         progress_logger.debug(f"   API Key present: {bool(self.api_key)}")
         progress_logger.debug(f"   Prompt length: {len(full_prompt)} chars")
         progress_logger.debug(f"   Body size: {len(body_str)} bytes")
         progress_logger.debug(f"   Headers: {list(headers.keys())}")
-        progress_logger.debug(f"   Timeout: {self.timeout}s")
+        progress_logger.debug(
+            f"   Timeout: {self.timeout}s, Activity timeout: {self.activity_timeout}s"
+        )
 
         start_time = datetime.now()
 
-        # Execute request with retry logic
+        # Execute request with appropriate method
         try:
-            response_json = await self._execute_request_with_retry(
-                url=full_url, headers=headers, body=body
-            )
-            elapsed = (datetime.now() - start_time).total_seconds()
-            progress_logger.info(
-                f"[SUCCESS] HTTP REQUEST | Model: {model} | Time: {elapsed:.2f}s"
-            )
-            progress_logger.debug(
-                f"   Response keys: {list(response_json.keys()) if isinstance(response_json, dict) else 'N/A'}"
-            )
-            return self.parse_response(response_json)
+            if self.use_streaming:
+                # Streaming mode: read SSE events with heartbeat timeout
+                result = await self._execute_streaming_request(
+                    url=full_url, headers=headers, body=body, model=model
+                )
+                elapsed = (datetime.now() - start_time).total_seconds()
+                progress_logger.info(
+                    f"[SUCCESS] HTTP STREAMING | Model: {model} | Time: {elapsed:.2f}s"
+                )
+                return result
+            else:
+                # Standard mode: single request/response
+                response_json = await self._execute_request_with_retry(
+                    url=full_url, headers=headers, body=body
+                )
+                elapsed = (datetime.now() - start_time).total_seconds()
+                progress_logger.info(
+                    f"[SUCCESS] HTTP REQUEST | Model: {model} | Time: {elapsed:.2f}s"
+                )
+                progress_logger.debug(
+                    f"   Response keys: {list(response_json.keys()) if isinstance(response_json, dict) else 'N/A'}"
+                )
+                return self.parse_response(response_json)
 
         except asyncio.TimeoutError:
             elapsed = (datetime.now() - start_time).total_seconds()
@@ -272,3 +307,146 @@ class BaseHTTPAdapter(ABC):
                 return response.json()
 
         return await _make_request()
+
+    async def _execute_streaming_request(
+        self,
+        url: str,
+        headers: dict[str, str],
+        body: dict,
+        model: str,
+    ) -> str:
+        """
+        Execute HTTP POST request with streaming response.
+
+        Reads SSE (Server-Sent Events) line-by-line with activity-based timeout.
+        Each SSE event resets the timeout (heartbeat pattern).
+
+        OpenAI-compatible SSE format:
+            data: {"choices": [{"delta": {"content": "token"}}]}
+            data: [DONE]
+
+        Args:
+            url: Full request URL
+            headers: Request headers
+            body: Request body (should have stream=True)
+            model: Model identifier (for logging)
+
+        Returns:
+            Assembled response text from all chunks
+
+        Raises:
+            TimeoutError: If no activity for activity_timeout seconds
+            httpx.HTTPStatusError: On HTTP error
+        """
+        chunks: list[str] = []
+        lines_received = 0
+
+        progress_logger.debug(f"   [STREAM] Starting streaming request to {url}")
+
+        # Use a longer connect timeout but activity-based read timeout
+        timeout_config = httpx.Timeout(
+            connect=30.0,  # Connection timeout
+            read=self.activity_timeout,  # Activity timeout per chunk
+            write=30.0,
+            pool=30.0,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
+                async with client.stream("POST", url, headers=headers, json=body) as response:
+                    # Check for HTTP errors
+                    if response.status_code >= 400:
+                        error_text = await response.aread()
+                        progress_logger.error(
+                            f"   [STREAM_ERROR] HTTP {response.status_code}: {error_text[:500]}"
+                        )
+                        response.raise_for_status()
+
+                    progress_logger.debug(
+                        f"   [STREAM] Connected, status: {response.status_code}"
+                    )
+
+                    # Read SSE events line-by-line
+                    async for line in response.aiter_lines():
+                        lines_received += 1
+
+                        # Log heartbeat every 50 lines
+                        if lines_received % 50 == 0:
+                            progress_logger.debug(
+                                f"   [STREAM] Heartbeat: {lines_received} lines, "
+                                f"{len(chunks)} chunks"
+                            )
+
+                        # Parse SSE data lines
+                        if line.startswith("data: "):
+                            data_str = line[6:]  # Remove "data: " prefix
+
+                            # Check for end marker
+                            if data_str.strip() == "[DONE]":
+                                progress_logger.debug(
+                                    f"   [STREAM] Received [DONE] marker"
+                                )
+                                break
+
+                            # Parse JSON data
+                            try:
+                                data = json.loads(data_str)
+                                text = self._extract_streaming_chunk(data)
+                                if text:
+                                    chunks.append(text)
+                            except json.JSONDecodeError:
+                                # Not valid JSON, skip
+                                continue
+
+        except httpx.ReadTimeout:
+            progress_logger.warning(
+                f"   [STREAM_TIMEOUT] No activity for {self.activity_timeout}s "
+                f"(received {lines_received} lines, {len(chunks)} chunks)"
+            )
+            raise TimeoutError(
+                f"Streaming timeout: no activity for {self.activity_timeout}s"
+            )
+
+        result = "".join(chunks)
+        progress_logger.debug(
+            f"   [STREAM_COMPLETE] {lines_received} lines, {len(chunks)} chunks, "
+            f"{len(result)} chars"
+        )
+        return result
+
+    def _extract_streaming_chunk(self, data: dict) -> Optional[str]:
+        """
+        Extract text content from a streaming SSE event.
+
+        Handles OpenAI-compatible formats:
+        - Chat Completions: {"choices": [{"delta": {"content": "..."}}]}
+        - Responses API: {"output": [{"content": "..."}]}
+
+        Args:
+            data: Parsed JSON from SSE data line
+
+        Returns:
+            Extracted text content, or None if no content found
+        """
+        # OpenAI Chat Completions format
+        if "choices" in data:
+            choices = data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                return delta.get("content")
+
+        # OpenAI Responses API format
+        if "output" in data:
+            output = data.get("output", [])
+            if output:
+                return output[0].get("content")
+
+        # Direct text field
+        if "text" in data:
+            return data.get("text")
+
+        # Content field
+        if "content" in data:
+            return data.get("content")
+
+        return None

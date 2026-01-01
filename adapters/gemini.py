@@ -1,16 +1,24 @@
 """Gemini CLI adapter."""
 
+import json
+import logging
+
 from adapters.base import BaseCLIAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class GeminiAdapter(BaseCLIAdapter):
-    """Adapter for gemini CLI tool (Google AI)."""
+    """Adapter for gemini CLI tool (Google AI) with streaming support."""
 
     # Gemini API limits (conservative estimates based on production errors)
     # Gemini API rejects prompts around 30k+ tokens
     # Use 100k characters as safe threshold (~25k tokens at 4 chars/token)
     # This prevents "invalid argument" API errors seen in production
     MAX_PROMPT_CHARS = 100000
+
+    # Streaming args for reliable heartbeat detection
+    STREAMING_ARGS = ["--output-format", "stream-json"]
 
     def __init__(
         self,
@@ -19,6 +27,7 @@ class GeminiAdapter(BaseCLIAdapter):
         timeout: int = 60,
         activity_timeout: int | None = None,
         default_reasoning_effort: str | None = None,
+        use_streaming: bool = True,
     ):
         """
         Initialize Gemini adapter.
@@ -29,6 +38,7 @@ class GeminiAdapter(BaseCLIAdapter):
             timeout: Timeout in seconds (default: 60)
             activity_timeout: Inactivity timeout in seconds (resets on output)
             default_reasoning_effort: Ignored (Gemini doesn't support reasoning effort)
+            use_streaming: If True, use streaming JSON output for reliable heartbeat.
 
         Note:
             The gemini CLI uses `gemini -p "prompt"` or `gemini -m model -p "prompt"` syntax.
@@ -41,7 +51,35 @@ class GeminiAdapter(BaseCLIAdapter):
             timeout=timeout,
             activity_timeout=activity_timeout,
             default_reasoning_effort=default_reasoning_effort,
+            use_streaming=use_streaming,
         )
+
+    def _adjust_args_for_context(self, is_deliberation: bool) -> list[str]:
+        """
+        Adjust arguments based on context.
+
+        Adds streaming args if streaming is enabled.
+
+        Args:
+            is_deliberation: True if running as part of a deliberation
+
+        Returns:
+            Adjusted argument list
+        """
+        args = self.args.copy()
+
+        # Add streaming args if streaming is enabled
+        if self.use_streaming:
+            for arg in self.STREAMING_ARGS:
+                if arg not in args:
+                    # Insert streaming args before the prompt placeholder
+                    if "{prompt}" in args:
+                        prompt_idx = args.index("{prompt}")
+                        args.insert(prompt_idx, arg)
+                    else:
+                        args.append(arg)
+
+        return args
 
     def validate_prompt_length(self, prompt: str) -> bool:
         """
@@ -59,8 +97,9 @@ class GeminiAdapter(BaseCLIAdapter):
         """
         Parse gemini output.
 
-        Gemini outputs clean responses without header/footer text,
-        so we simply strip whitespace.
+        Handles two output formats:
+        1. Streaming JSON (--output-format stream-json): JSONL events
+        2. Plain text: Clean output without header/footer
 
         Args:
             raw_output: Raw stdout from gemini
@@ -68,4 +107,83 @@ class GeminiAdapter(BaseCLIAdapter):
         Returns:
             Parsed model response
         """
+        lines = raw_output.strip().split("\n")
+
+        # Check if this is streaming JSON output (first non-empty line starts with {)
+        first_content_line = next((l for l in lines if l.strip()), "")
+        if first_content_line.startswith("{"):
+            return self._parse_streaming_json(lines)
+
+        # Plain text output - just strip whitespace
         return raw_output.strip()
+
+    def _parse_streaming_json(self, lines: list[str]) -> str:
+        """
+        Parse streaming JSON output from Gemini CLI.
+
+        Gemini --output-format stream-json outputs JSONL events.
+        Look for text content in various event structures.
+
+        Args:
+            lines: List of JSONL lines
+
+        Returns:
+            Parsed model response
+        """
+        result_text = ""
+        text_chunks = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+
+                # Look for text content in various fields
+                # Gemini may use different structures for different event types
+                text = None
+
+                # Direct text field
+                if "text" in data:
+                    text = data["text"]
+                # Content field
+                elif "content" in data:
+                    text = data["content"]
+                # Result field
+                elif "result" in data:
+                    text = data["result"]
+                # Response field
+                elif "response" in data:
+                    text = data["response"]
+                # Nested in candidates (Gemini API style)
+                elif "candidates" in data:
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        content = candidates[0].get("content", {})
+                        parts = content.get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "")
+
+                if text:
+                    text_chunks.append(text)
+
+            except json.JSONDecodeError:
+                # Not valid JSON, might be raw text
+                if not result_text:
+                    result_text = line
+                continue
+
+        # Assemble text chunks
+        if text_chunks:
+            result_text = "".join(text_chunks)
+            logger.debug(
+                f"Assembled result from {len(text_chunks)} Gemini chunks: "
+                f"{len(result_text)} chars"
+            )
+
+        if result_text:
+            return result_text.strip()
+
+        # Fallback: return raw output
+        logger.warning("Could not extract result from Gemini JSON, returning raw output")
+        return "\n".join(lines)

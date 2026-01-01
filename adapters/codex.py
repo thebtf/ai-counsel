@@ -1,12 +1,16 @@
 """Codex CLI adapter."""
 
+import json
+import logging
 from typing import Optional
 
 from adapters.base import BaseCLIAdapter
 
+logger = logging.getLogger(__name__)
+
 
 class CodexAdapter(BaseCLIAdapter):
-    """Adapter for codex CLI tool.
+    """Adapter for codex CLI tool with streaming support.
 
     Reasoning effort is configured via the {reasoning_effort} placeholder in config.yaml.
     The base class handles substitution - this adapter just validates the value.
@@ -16,6 +20,9 @@ class CodexAdapter(BaseCLIAdapter):
     # See: codex exec --help for current options
     VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high"}
 
+    # Streaming arg for reliable heartbeat detection
+    STREAMING_ARGS = ["--json"]
+
     def __init__(
         self,
         command: str = "codex",
@@ -23,6 +30,7 @@ class CodexAdapter(BaseCLIAdapter):
         timeout: int = 60,
         activity_timeout: Optional[int] = None,
         default_reasoning_effort: Optional[str] = None,
+        use_streaming: bool = True,
     ):
         """
         Initialize Codex adapter.
@@ -34,6 +42,7 @@ class CodexAdapter(BaseCLIAdapter):
             activity_timeout: Inactivity timeout in seconds (resets on output)
             default_reasoning_effort: Default reasoning effort level (none/minimal/low/medium/high).
                 Used when {reasoning_effort} placeholder is in args. Can be overridden per-participant.
+            use_streaming: If True, use streaming JSON output for reliable heartbeat.
         """
         if args is None:
             raise ValueError("args must be provided from config.yaml")
@@ -51,7 +60,35 @@ class CodexAdapter(BaseCLIAdapter):
             timeout=timeout,
             activity_timeout=activity_timeout,
             default_reasoning_effort=default_reasoning_effort,
+            use_streaming=use_streaming,
         )
+
+    def _adjust_args_for_context(self, is_deliberation: bool) -> list[str]:
+        """
+        Adjust arguments based on context.
+
+        Adds streaming args if streaming is enabled.
+
+        Args:
+            is_deliberation: True if running as part of a deliberation
+
+        Returns:
+            Adjusted argument list
+        """
+        args = self.args.copy()
+
+        # Add streaming args if streaming is enabled
+        if self.use_streaming:
+            for arg in self.STREAMING_ARGS:
+                if arg not in args:
+                    # Insert streaming args before the prompt placeholder
+                    if "{prompt}" in args:
+                        prompt_idx = args.index("{prompt}")
+                        args.insert(prompt_idx, arg)
+                    else:
+                        args.append(arg)
+
+        return args
 
     async def invoke(
         self,
@@ -106,8 +143,9 @@ class CodexAdapter(BaseCLIAdapter):
         """
         Parse codex output.
 
-        Codex outputs clean responses without header/footer text,
-        so we simply strip whitespace.
+        Handles two output formats:
+        1. Streaming JSON (--json): JSONL events with result in final message
+        2. Plain text: Clean output without header/footer
 
         Args:
             raw_output: Raw stdout from codex
@@ -115,4 +153,67 @@ class CodexAdapter(BaseCLIAdapter):
         Returns:
             Parsed model response
         """
+        lines = raw_output.strip().split("\n")
+
+        # Check if this is streaming JSON output (first non-empty line starts with {)
+        first_content_line = next((l for l in lines if l.strip()), "")
+        if first_content_line.startswith("{"):
+            return self._parse_streaming_json(lines)
+
+        # Plain text output - just strip whitespace
         return raw_output.strip()
+
+    def _parse_streaming_json(self, lines: list[str]) -> str:
+        """
+        Parse streaming JSON output from Codex CLI.
+
+        Codex --json outputs JSONL events. Common patterns:
+        - {"type": "message", "content": "text"}
+        - Final response in last message event
+
+        Args:
+            lines: List of JSONL lines
+
+        Returns:
+            Parsed model response
+        """
+        result_text = ""
+        message_contents = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+
+                # Look for message content
+                if data.get("type") == "message":
+                    content = data.get("content", "")
+                    if content:
+                        message_contents.append(content)
+
+                # Look for response/result fields
+                for key in ["response", "result", "text", "output", "content"]:
+                    if key in data and data[key]:
+                        result_text = data[key]
+
+            except json.JSONDecodeError:
+                # Not valid JSON, might be raw text - use it as fallback
+                if not result_text:
+                    result_text = line
+                continue
+
+        # Prefer assembled messages if we got any
+        if message_contents:
+            result_text = "".join(message_contents)
+            logger.debug(
+                f"Assembled result from {len(message_contents)} Codex messages: "
+                f"{len(result_text)} chars"
+            )
+
+        if result_text:
+            return result_text.strip()
+
+        # Fallback: return raw output
+        logger.warning("Could not extract result from Codex JSON, returning raw output")
+        return "\n".join(lines)

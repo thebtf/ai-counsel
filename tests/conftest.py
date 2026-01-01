@@ -15,16 +15,19 @@ def create_mock_process(
     hang_on_read: bool = False,
 ) -> Mock:
     """
-    Create a mock process compatible with _read_with_activity_timeout().
+    Create a mock process compatible with both reading modes.
 
-    This helper creates mocks for stdout.read(), stderr.read(), and wait()
-    that work with asyncio.wait_for() and the chunked reading pattern.
+    This helper creates mocks for:
+    - stdout.read() - for chunk-based reading
+    - stdout.readline() - for streaming line-by-line reading
+    - stderr.read() - for stderr collection
+    - wait() and kill() - for process management
 
     Args:
         stdout_data: Data to return from stdout
         stderr_data: Data to return from stderr
         returncode: Process return code
-        hang_on_read: If True, read() blocks forever (triggers activity timeout)
+        hang_on_read: If True, read()/readline() blocks forever (triggers activity timeout)
 
     Returns:
         Mock process object with properly configured async methods
@@ -33,9 +36,17 @@ def create_mock_process(
 
     mock_process = Mock()
 
-    # For stdout
+    # For stdout - support both read() and readline()
     stdout_mock = Mock()
     stdout_read_called = [False]
+
+    # Split stdout_data into lines for readline() support
+    stdout_lines = stdout_data.split(b"\n") if stdout_data else []
+    # Add back newlines to each line except the last
+    stdout_lines = [line + b"\n" for line in stdout_lines[:-1]] + (
+        [stdout_lines[-1]] if stdout_lines else []
+    )
+    stdout_line_index = [0]
 
     async def stdout_read(n: int = -1) -> bytes:
         if hang_on_read:
@@ -47,7 +58,19 @@ def create_mock_process(
             return stdout_data
         return b""
 
+    async def stdout_readline() -> bytes:
+        if hang_on_read:
+            # Block forever - will be cancelled by activity timeout
+            await asyncio.sleep(3600)  # 1 hour, will be cancelled
+            return b""
+        if stdout_line_index[0] < len(stdout_lines):
+            line = stdout_lines[stdout_line_index[0]]
+            stdout_line_index[0] += 1
+            return line
+        return b""
+
     stdout_mock.read = stdout_read
+    stdout_mock.readline = stdout_readline
     mock_process.stdout = stdout_mock
 
     # For stderr
