@@ -398,14 +398,14 @@ class BaseHTTPAdapter(ABC):
                                 # Not valid JSON, skip
                                 continue
 
-        except httpx.ReadTimeout:
+        except httpx.ReadTimeout as err:
             progress_logger.warning(
                 f"   [STREAM_TIMEOUT] No activity for {self.activity_timeout}s "
                 f"(received {lines_received} lines, {len(chunks)} chunks)"
             )
             raise TimeoutError(
                 f"Streaming timeout: no activity for {self.activity_timeout}s"
-            )
+            ) from err
 
         result = "".join(chunks)
         progress_logger.debug(

@@ -156,7 +156,7 @@ class CodexAdapter(BaseCLIAdapter):
         lines = raw_output.strip().split("\n")
 
         # Check if this is streaming JSON output (first non-empty line starts with {)
-        first_content_line = next((l for l in lines if l.strip()), "")
+        first_content_line = next((line for line in lines if line.strip()), "")
         if first_content_line.startswith("{"):
             return self._parse_streaming_json(lines)
 

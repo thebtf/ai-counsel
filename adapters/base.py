@@ -427,14 +427,14 @@ class BaseCLIAdapter(ABC):
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     stderr_task.cancel()
 
-        # Wait for process to finish
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+            # Always ensure process cleanup (prevents leaks on non-timeout exceptions)
             try:
-                process.kill()
-            except ProcessLookupError:
-                pass
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
 
         logger.info(
             f"Streaming read complete: {model} - {lines_received} lines, "
