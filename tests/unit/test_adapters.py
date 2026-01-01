@@ -312,6 +312,47 @@ class TestGeminiAdapter:
         assert not result.startswith(" ")
         assert not result.endswith(" ")
 
+    def test_streaming_args_inserted_before_p_flag(self):
+        """Test streaming args are inserted before -p flag, not before {prompt}.
+
+        The Gemini CLI requires -p to be immediately followed by its argument.
+        Inserting streaming args between -p and {prompt} breaks the CLI:
+        WRONG: -p --output-format stream-json {prompt}
+        RIGHT: --output-format stream-json -p {prompt}
+        """
+        adapter = GeminiAdapter(
+            args=["-m", "{model}", "-p", "{prompt}"],
+            use_streaming=True,
+        )
+
+        adjusted_args = adapter._adjust_args_for_context(is_deliberation=True)
+
+        # Streaming args should be before -p
+        p_index = adjusted_args.index("-p")
+        prompt_index = adjusted_args.index("{prompt}")
+        output_format_index = adjusted_args.index("--output-format")
+        stream_json_index = adjusted_args.index("stream-json")
+
+        # Streaming args must be BEFORE -p
+        assert output_format_index < p_index, "Streaming args must be before -p flag"
+        assert stream_json_index < p_index, "Streaming args must be before -p flag"
+
+        # -p must be immediately followed by {prompt}
+        assert prompt_index == p_index + 1, "-p must be immediately followed by {prompt}"
+
+    def test_streaming_args_disabled(self):
+        """Test no streaming args when streaming is disabled."""
+        adapter = GeminiAdapter(
+            args=["-m", "{model}", "-p", "{prompt}"],
+            use_streaming=False,
+        )
+
+        adjusted_args = adapter._adjust_args_for_context(is_deliberation=True)
+
+        assert "--output-format" not in adjusted_args
+        assert "stream-json" not in adjusted_args
+        assert adjusted_args == ["-m", "{model}", "-p", "{prompt}"]
+
 
 class TestDroidAdapter:
     """Tests for DroidAdapter."""
