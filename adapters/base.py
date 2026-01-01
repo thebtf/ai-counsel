@@ -34,6 +34,7 @@ class BaseCLIAdapter(ABC):
         command: str,
         args: list[str],
         timeout: int = 60,
+        activity_timeout: Optional[int] = None,
         max_retries: int = 2,
         default_reasoning_effort: Optional[str] = None,
     ):
@@ -43,7 +44,10 @@ class BaseCLIAdapter(ABC):
         Args:
             command: CLI command to execute
             args: List of argument templates (may contain {model}, {prompt} placeholders)
-            timeout: Timeout in seconds (default: 60)
+            timeout: Timeout in seconds (default: 60) - used as fallback for activity_timeout
+            activity_timeout: Inactivity timeout in seconds. Resets on each output chunk.
+                If None, falls back to timeout. Useful for reasoning models that
+                produce output incrementally.
             max_retries: Maximum retry attempts for transient errors (default: 2)
             default_reasoning_effort: Default reasoning effort level for this adapter.
                 Only applicable to codex (low/medium/high/extra-high) and droid (off/low/medium/high).
@@ -52,6 +56,7 @@ class BaseCLIAdapter(ABC):
         self.command = command
         self.args = args
         self.timeout = timeout
+        self.activity_timeout = activity_timeout if activity_timeout is not None else timeout
         self.max_retries = max_retries
         self.default_reasoning_effort = default_reasoning_effort
 
@@ -147,9 +152,13 @@ class BaseCLIAdapter(ABC):
                     cwd=cwd,
                 )
 
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=self.timeout
-                )
+                # Use activity-based timeout: resets on each output chunk
+                stdout, stderr, timed_out = await self._read_with_activity_timeout(process, model)
+
+                if timed_out:
+                    raise TimeoutError(
+                        f"Activity timeout: no output for {self.activity_timeout}s"
+                    )
 
                 if process.returncode != 0:
                     error_msg = stderr.decode("utf-8", errors="replace")
@@ -189,12 +198,14 @@ class BaseCLIAdapter(ABC):
                 logger.debug(f"Raw output preview: {raw_output[:500]}...")
                 return self.parse_output(raw_output)
 
-            except asyncio.TimeoutError:
-                logger.error(
+            except (asyncio.TimeoutError, TimeoutError) as e:
+                logger.exception(
                     f"CLI invocation timed out: command={self.command}, "
-                    f"model={model}, timeout={self.timeout}s"
+                    f"model={model}, activity_timeout={self.activity_timeout}s"
                 )
-                raise TimeoutError(f"CLI invocation timed out after {self.timeout}s")
+                raise TimeoutError(
+                    f"CLI invocation timed out: no activity for {self.activity_timeout}s"
+                ) from e
 
         # All retries exhausted
         raise RuntimeError(
@@ -234,12 +245,12 @@ class BaseCLIAdapter(ABC):
             process: The running subprocess
             model: Model identifier (for logging)
             activity_timeout: Seconds of inactivity before timeout.
-                Defaults to self.timeout if not specified.
+                Defaults to self.activity_timeout if not specified.
 
         Returns:
             Tuple of (stdout_bytes, stderr_bytes, timed_out_flag)
         """
-        timeout = activity_timeout if activity_timeout is not None else self.timeout
+        effective_timeout = activity_timeout if activity_timeout is not None else self.activity_timeout
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
         timed_out = False
@@ -271,14 +282,14 @@ class BaseCLIAdapter(ABC):
             while pending:
                 done, pending = await asyncio.wait(
                     pending,
-                    timeout=timeout,
+                    timeout=effective_timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if not done:
                     # Timeout with no activity
                     timed_out = True
                     logger.warning(
-                        f"Activity timeout: no output from {model} for {timeout}s"
+                        f"Activity timeout: no output from {model} for {effective_timeout}s"
                     )
                     # Cancel remaining tasks
                     for task in pending:
