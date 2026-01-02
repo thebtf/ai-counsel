@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Literal, Optional, cast
 
 from pydantic import ValidationError
 
@@ -38,6 +38,10 @@ if TYPE_CHECKING:
     from deliberation.transcript import TranscriptManager
     from deliberation.tools import ToolExecutor
     from models.schema import DeliberateRequest, DeliberationResult
+
+# Type alias for MCP progress callback
+# Signature: async def(progress: float, total: float | None, message: str | None) -> None
+ProgressCallback = Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
 
 
 class DeliberationEngine:
@@ -287,8 +291,11 @@ The following files are available in the working directory:
         # Run all participant adapters concurrently for ~3x speedup
         async def invoke_participant(
             participant: Participant,
-        ) -> tuple[Participant, str]:
-            """Invoke a single participant's adapter and return the response."""
+        ) -> tuple[Participant, str, float]:
+            """Invoke a single participant's adapter and return the response with timing."""
+            import time
+
+            start_time = time.perf_counter()
             adapter = self.adapters[participant.cli]
 
             reasoning_info = (
@@ -363,13 +370,15 @@ The following files are available in the working directory:
                             # Continue with original response if retry fails
                             break
 
-                return (participant, response_text)
+                duration = time.perf_counter() - start_time
+                return (participant, response_text, duration)
             except Exception as e:
+                duration = time.perf_counter() - start_time
                 logger.error(
                     f"Adapter {participant.cli} failed for model {participant.model}: {e}",
                     exc_info=True,
                 )
-                return (participant, f"[ERROR: {type(e).__name__}: {str(e)}]")
+                return (participant, f"[ERROR: {type(e).__name__}: {str(e)}]", duration)
 
         # Run all participants in PARALLEL using asyncio.gather
         logger.info(
@@ -380,7 +389,7 @@ The following files are available in the working directory:
         )
 
         # Process results and handle any exceptions from gather
-        participant_responses: list[tuple[Participant, str]] = []
+        participant_responses: list[tuple[Participant, str, float]] = []
         for i, result in enumerate(parallel_results):
             if isinstance(result, Exception):
                 # Handle unexpected exceptions from gather itself
@@ -389,14 +398,14 @@ The following files are available in the working directory:
                     f"Unexpected error for {participant.model}@{participant.cli}: {result}"
                 )
                 participant_responses.append(
-                    (participant, f"[ERROR: {type(result).__name__}: {str(result)}]")
+                    (participant, f"[ERROR: {type(result).__name__}: {str(result)}]", 0.0)
                 )
             else:
                 participant_responses.append(result)
 
         # ========== SEQUENTIAL TOOL EXECUTION ==========
         # Process tool requests sequentially (tools may have dependencies)
-        for participant, response_text in participant_responses:
+        for participant, response_text, duration in participant_responses:
             if self.tool_executor:
                 tool_requests = self.tool_executor.parse_tool_requests(response_text)
                 if tool_requests:
@@ -447,12 +456,13 @@ The following files are available in the working directory:
                                 f"Tool {tool_request.name} failed: {tool_result.error}"
                             )
 
-            # Create response object
+            # Create response object with timing
             response = RoundResponse(
                 round=round_num,
                 participant=f"{participant.model}@{participant.cli}",
                 response=response_text,
                 timestamp=datetime.now().isoformat(),
+                duration_seconds=round(duration, 2),
             )
 
             responses.append(response)
@@ -1036,12 +1046,19 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
 
         return False
 
-    async def execute(self, request: "DeliberateRequest") -> "DeliberationResult":
+    async def execute(
+        self,
+        request: "DeliberateRequest",
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> "DeliberationResult":
         """
         Execute full deliberation with multiple rounds and optional convergence detection.
 
         Args:
             request: Deliberation request containing question, participants, rounds, and mode
+            progress_callback: Optional async callback for reporting progress to MCP client.
+                Signature: async def(progress: float, total: float | None, message: str | None)
+                Called at key points: start, each round, completion.
 
         Returns:
             Complete deliberation result with optional convergence_info
@@ -1115,9 +1132,24 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
         converged = False
         model_controlled_stop = False
 
+        # Track timing info for each round
+        from models.schema import RoundTimingInfo, ParticipantTiming, TimingInfo
+
+        round_timings: list[RoundTimingInfo] = []
+
+        # Report progress: deliberation starting (after rounds_to_execute is known)
+        if progress_callback:
+            await progress_callback(0, rounds_to_execute, "Starting deliberation")
+
         for round_num in range(1, rounds_to_execute + 1):
             round_start = datetime.now()
             progress_logger.info(f"📍 ROUND {round_num}/{rounds_to_execute} START")
+
+            # Report progress: round starting
+            if progress_callback:
+                await progress_callback(
+                    round_num - 1, rounds_to_execute, f"Starting round {round_num}"
+                )
 
             try:
                 # Execute round with timeout protection (5 min per round max)
@@ -1150,9 +1182,9 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
                 round_responses = [
                     RoundResponse(
                         round=round_num,
-                        cli=p.cli,
-                        model=p.model,
+                        participant=f"{p.model}@{p.cli}",
                         response=f"[ERROR: Round timed out after {round_timeout}s]",
+                        timestamp=datetime.now().isoformat(),
                     )
                     for p in request.participants
                 ]
@@ -1173,9 +1205,9 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
                 round_responses = [
                     RoundResponse(
                         round=round_num,
-                        cli=p.cli,
-                        model=p.model,
+                        participant=f"{p.model}@{p.cli}",
                         response=f"[ERROR: {type(e).__name__}: {str(e)[:200]}]",
+                        timestamp=datetime.now().isoformat(),
                     )
                     for p in request.participants
                 ]
@@ -1201,6 +1233,29 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
                     progress_logger.info(
                         f"   ✅ {r.participant}: {len(r.response)} chars"
                     )
+
+            # Collect timing info for this round
+            participant_timings = [
+                ParticipantTiming(
+                    participant=r.participant,
+                    duration_seconds=r.duration_seconds or 0.0,
+                    status="error" if r.response.startswith("[ERROR") else "success",
+                )
+                for r in round_responses
+            ]
+            round_timings.append(
+                RoundTimingInfo(
+                    round_number=round_num,
+                    duration_seconds=round(round_elapsed, 2),
+                    participant_timings=participant_timings,
+                )
+            )
+
+            # Report progress: round completed
+            if progress_callback:
+                await progress_callback(
+                    round_num, rounds_to_execute, f"Round {round_num} complete"
+                )
 
             # Check for model-controlled early stopping
             # Use config minimum rounds, not request rounds, for respect_min_rounds
@@ -1337,6 +1392,34 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
             except Exception:
                 graph_context_summary = "Decision graph context injected"
 
+        # Build timing info
+        total_elapsed = (datetime.now() - deliberation_start).total_seconds()
+        avg_round_duration = (
+            sum(rt.duration_seconds for rt in round_timings) / len(round_timings)
+            if round_timings
+            else None
+        )
+
+        # Find slowest participant (highest total response time across all rounds)
+        participant_total_times: dict[str, float] = {}
+        for rt in round_timings:
+            for pt in rt.participant_timings:
+                participant_total_times[pt.participant] = (
+                    participant_total_times.get(pt.participant, 0.0) + pt.duration_seconds
+                )
+        slowest_participant = (
+            max(participant_total_times, key=participant_total_times.get)
+            if participant_total_times
+            else None
+        )
+
+        timing_info = TimingInfo(
+            total_duration_seconds=round(total_elapsed, 2),
+            rounds=round_timings,
+            average_round_duration=round(avg_round_duration, 2) if avg_round_duration else None,
+            slowest_participant=slowest_participant,
+        )
+
         # Create result
         result = DeliberationResult(
             status="complete",
@@ -1350,6 +1433,7 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
             voting_result=voting_result,  # Add voting results
             graph_context_summary=graph_context_summary,  # Add graph context summary
             tool_executions=self.tool_execution_history,  # Add tool execution history
+            timing_info=timing_info,  # Add timing info
         )
 
         # Add convergence info if available
@@ -1463,5 +1547,12 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
             progress_logger.info("   Issues: None")
         progress_logger.info(f"   Transcript: {result.transcript_path}")
         progress_logger.info("=" * 70)
+
+        # Report progress: deliberation complete
+        # Use actual_rounds_completed for accurate progress on early stop
+        if progress_callback:
+            await progress_callback(
+                actual_rounds_completed, rounds_to_execute, "Deliberation complete"
+            )
 
         return result
