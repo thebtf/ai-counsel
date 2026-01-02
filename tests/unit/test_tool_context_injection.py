@@ -4,6 +4,7 @@ This test file verifies the CRITICAL bug fix: tool results must be injected
 into subsequent round contexts so all models can see the evidence.
 """
 
+import json
 import pytest
 from datetime import datetime
 from pathlib import Path
@@ -41,11 +42,13 @@ class TestToolResultContextInjection:
         participants = [Participant(cli="claude", model="sonnet", stance="neutral")]
 
         # Round 1: Model requests tool
+        # Use json.dumps to properly escape Windows backslashes in paths
+        test_file_escaped = json.dumps(str(test_file))
         mock_adapters[
             "claude"
         ].invoke_mock.return_value = f"""
 I'll check the config file.
-TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{test_file}"}}}}
+TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": {test_file_escaped}}}}}
 """
 
         round1 = await engine.execute_round(1, "What database?", participants, [])
@@ -94,11 +97,13 @@ TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{test_file}"}}}}
         ]
 
         # Round 1: One model uses tool
+        # Use json.dumps to properly escape Windows backslashes in paths
+        test_file_escaped = json.dumps(str(test_file))
         mock_adapters[
             "claude"
         ].invoke_mock.return_value = f"""
 Let me check the data.
-TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{test_file}"}}}}
+TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": {test_file_escaped}}}}}
 """
         mock_adapters["codex"].invoke_mock.return_value = "I'll wait for data."
 
@@ -169,11 +174,13 @@ TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{test_file}"}}}}
         participants = [Participant(cli="claude", model="sonnet", stance="neutral")]
 
         # Round 1: Read large file
+        # Use json.dumps to properly escape Windows backslashes in paths
+        large_file_escaped = json.dumps(str(large_file))
         mock_adapters[
             "claude"
         ].invoke_mock.return_value = f"""
 Reading the file.
-TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{large_file}"}}}}
+TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": {large_file_escaped}}}}}
 """
 
         round1 = await engine.execute_round(1, "Test", participants, [])
@@ -212,11 +219,13 @@ TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{large_file}"}}}}
             test_file.write_text(f"data from round {i}")
 
             # Include VOTE to prevent vote retry mechanism from triggering additional tool executions
+            # Use json.dumps to properly escape Windows backslashes in paths
+            test_file_escaped = json.dumps(str(test_file))
             mock_adapters[
                 "claude"
             ].invoke_mock.return_value = f"""
 Checking round {i}.
-TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": "{test_file}"}}}}
+TOOL_REQUEST: {{"name": "read_file", "arguments": {{"path": {test_file_escaped}}}}}
 
 VOTE: {{"option": "A", "confidence": 0.8, "rationale": "Test vote", "continue_debate": true}}
 """

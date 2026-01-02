@@ -67,7 +67,8 @@ class CodexAdapter(BaseCLIAdapter):
         """
         Adjust arguments based on context.
 
-        Adds streaming args if streaming is enabled.
+        Adds streaming args if streaming is enabled. Uses base class helper
+        to insert args before the prompt placeholder.
 
         Args:
             is_deliberation: True if running as part of a deliberation
@@ -77,16 +78,13 @@ class CodexAdapter(BaseCLIAdapter):
         """
         args = self.args.copy()
 
-        # Add streaming args if streaming is enabled
         if self.use_streaming:
-            for arg in self.STREAMING_ARGS:
-                if arg not in args:
-                    # Insert streaming args before the prompt placeholder
-                    if "{prompt}" in args:
-                        prompt_idx = args.index("{prompt}")
-                        args.insert(prompt_idx, arg)
-                    else:
-                        args.append(arg)
+            args = self._insert_streaming_args(
+                args,
+                self.STREAMING_ARGS,
+                before_flag=None,  # Codex doesn't have a flag like -p
+                fallback_placeholder="{prompt}",
+            )
 
         return args
 
@@ -169,6 +167,7 @@ class CodexAdapter(BaseCLIAdapter):
 
         Codex --json outputs JSONL events. Common patterns:
         - {"type": "message", "content": "text"}
+        - {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
         - Final response in last message event
 
         Args:
@@ -186,11 +185,19 @@ class CodexAdapter(BaseCLIAdapter):
             try:
                 data = json.loads(line)
 
-                # Look for message content
+                # Look for message content (legacy format)
                 if data.get("type") == "message":
                     content = data.get("content", "")
                     if content:
                         message_contents.append(content)
+
+                # Look for item.completed events with agent_message (new streaming format)
+                if data.get("type") == "item.completed":
+                    item = data.get("item", {})
+                    if item.get("type") == "agent_message":
+                        text = item.get("text", "")
+                        if text:
+                            message_contents.append(text)
 
                 # Look for response/result fields
                 for key in ["response", "result", "text", "output", "content"]:

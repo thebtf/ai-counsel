@@ -17,6 +17,7 @@ Test cases cover:
 """
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -567,8 +568,9 @@ class TestLlamaCppAutoDiscovery:
 
     def test_should_expand_tilde_in_search_paths(self, tmp_path, monkeypatch):
         """Test that ~ in search paths is expanded to home directory."""
-        # Mock home directory
+        # Mock home directory (USERPROFILE on Windows, HOME on Unix)
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -616,7 +618,7 @@ class TestLlamaCppAutoDiscovery:
         model1.touch()
         model2.touch()
 
-        monkeypatch.setenv("LLAMA_CPP_MODEL_PATH", f"{dir1}:{dir2}")
+        monkeypatch.setenv("LLAMA_CPP_MODEL_PATH", f"{dir1}{os.pathsep}{dir2}")
 
         adapter = LlamaCppAdapter(
             args=["-m", "{model}", "-p", "{prompt}"],

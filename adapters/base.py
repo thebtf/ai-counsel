@@ -444,6 +444,50 @@ class BaseCLIAdapter(ABC):
 
         return b"".join(stdout_lines), b"".join(stderr_chunks), timed_out
 
+    def _insert_streaming_args(
+        self,
+        args: list[str],
+        streaming_args: list[str],
+        before_flag: str | None = None,
+        fallback_placeholder: str = "{prompt}",
+    ) -> list[str]:
+        """
+        Insert streaming args before a specified flag or placeholder.
+
+        This helper reduces duplication across adapters that need to insert
+        streaming arguments at a specific position in the args list.
+
+        Args:
+            args: The argument list to modify (will be copied)
+            streaming_args: List of streaming arguments to insert
+            before_flag: Primary flag to insert before (e.g., "-p")
+            fallback_placeholder: Fallback position if flag not found (default: "{prompt}")
+
+        Returns:
+            Modified argument list with streaming args inserted
+        """
+        result = args.copy()
+
+        # Find insertion point
+        insert_idx = 0
+        if before_flag and before_flag in result:
+            insert_idx = result.index(before_flag)
+        elif fallback_placeholder in result:
+            insert_idx = result.index(fallback_placeholder)
+        else:
+            # Append at end if no markers found
+            for arg in streaming_args:
+                if arg not in result:
+                    result.append(arg)
+            return result
+
+        # Insert in reversed order to maintain correct final order
+        for arg in reversed(streaming_args):
+            if arg not in result:
+                result.insert(insert_idx, arg)
+
+        return result
+
     def _adjust_args_for_context(self, is_deliberation: bool) -> list[str]:
         """
         Adjust CLI arguments based on context (deliberation vs regular Claude Code work).

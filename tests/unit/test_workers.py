@@ -234,17 +234,22 @@ class TestBackgroundWorkerEnqueue:
 
     @pytest.mark.asyncio
     async def test_enqueue_with_delay(self, worker):
-        """Should delay before enqueueing."""
+        """Should enqueue immediately with process_after timestamp (non-blocking)."""
         await worker.start()
 
-        start_time = asyncio.get_event_loop().time()
-        delay_seconds = 0.1
+        delay_seconds = 5  # Use a larger delay to verify timestamp
         await worker.enqueue(decision_id="test-id", delay_seconds=delay_seconds)
-        elapsed = asyncio.get_event_loop().time() - start_time
 
-        # Should have delayed ~0.1s
-        assert elapsed >= delay_seconds - 0.02
+        # Job should be enqueued immediately (non-blocking design)
         assert worker.low_priority_queue.qsize() == 1
+
+        # Verify the job has correct process_after timestamp
+        job = await worker.low_priority_queue.get()
+        assert job.process_after is not None
+        # process_after should be ~5 seconds in the future
+        from datetime import datetime, timedelta
+        expected_min = datetime.now() + timedelta(seconds=delay_seconds - 1)
+        assert job.process_after >= expected_min, "process_after should be in the future"
 
     @pytest.mark.asyncio
     async def test_enqueue_queue_full(self, storage):

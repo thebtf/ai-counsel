@@ -64,6 +64,8 @@ class OpenAIAdapter(OpenAIChatCompletionsAdapter):
         responses_api_prefixes: Optional[List[str]] = None,
         max_output_tokens: Optional[int] = None,
         max_completion_tokens: Optional[int] = None,
+        use_streaming: bool = False,
+        activity_timeout: Optional[int] = None,
     ):
         """
         Initialize OpenAI adapter.
@@ -77,6 +79,8 @@ class OpenAIAdapter(OpenAIChatCompletionsAdapter):
             responses_api_prefixes: Model prefixes that use Responses API (default: ["o1", "o3"])
             max_output_tokens: Maximum output tokens for Responses API requests (default: None)
             max_completion_tokens: Maximum tokens for Chat Completions API requests (default: None)
+            use_streaming: If True, use streaming mode with SSE events (default: False)
+            activity_timeout: Inactivity timeout in seconds (default: same as timeout)
         """
         super().__init__(
             base_url=base_url,
@@ -84,6 +88,8 @@ class OpenAIAdapter(OpenAIChatCompletionsAdapter):
             max_retries=max_retries,
             api_key=api_key,
             headers=headers,
+            use_streaming=use_streaming,
+            activity_timeout=activity_timeout,
         )
         self.responses_api_prefixes = (
             responses_api_prefixes
