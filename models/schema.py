@@ -74,6 +74,46 @@ class RoundResponse(BaseModel):
     participant: str = Field(..., description="Participant identifier")
     response: str = Field(..., description="The response text")
     timestamp: str = Field(..., description="ISO 8601 timestamp")
+    duration_seconds: Optional[float] = Field(
+        default=None, description="Time taken for this response in seconds"
+    )
+
+
+class ParticipantTiming(BaseModel):
+    """Timing info for a single participant in a round."""
+
+    participant: str = Field(..., description="Participant identifier (cli:model)")
+    duration_seconds: float = Field(..., description="Response time in seconds")
+    status: Literal["success", "timeout", "error"] = Field(
+        default="success", description="Response status"
+    )
+
+
+class RoundTimingInfo(BaseModel):
+    """Timing information for a single round."""
+
+    round_number: int = Field(..., description="Round number (1-based)")
+    duration_seconds: float = Field(..., description="Total round duration in seconds")
+    participant_timings: list[ParticipantTiming] = Field(
+        default_factory=list, description="Per-participant timing breakdown"
+    )
+
+
+class TimingInfo(BaseModel):
+    """Overall timing information for a deliberation."""
+
+    total_duration_seconds: float = Field(
+        ..., description="Total deliberation duration in seconds"
+    )
+    rounds: list[RoundTimingInfo] = Field(
+        default_factory=list, description="Per-round timing breakdown"
+    )
+    average_round_duration: Optional[float] = Field(
+        default=None, description="Average duration per round in seconds"
+    )
+    slowest_participant: Optional[str] = Field(
+        default=None, description="Participant with highest total response time"
+    )
 
 
 class Summary(BaseModel):
@@ -203,4 +243,8 @@ class DeliberationResult(BaseModel):
     tool_executions: Optional[list] = Field(
         default_factory=list,
         description="List of tool executions during deliberation (evidence-based deliberation)",
+    )
+    timing_info: Optional[TimingInfo] = Field(
+        None,
+        description="Detailed timing breakdown for the deliberation (rounds, participants)",
     )
