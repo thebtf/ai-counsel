@@ -1492,9 +1492,10 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
         progress_logger.info("=" * 70)
 
         # Report progress: deliberation complete
+        # Use actual_rounds_completed for accurate progress on early stop
         if progress_callback:
             await progress_callback(
-                rounds_to_execute, rounds_to_execute, "Deliberation complete"
+                actual_rounds_completed, rounds_to_execute, "Deliberation complete"
             )
 
         return result
