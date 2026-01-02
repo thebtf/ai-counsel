@@ -58,7 +58,9 @@ class GeminiAdapter(BaseCLIAdapter):
         """
         Adjust arguments based on context.
 
-        Adds streaming args if streaming is enabled.
+        Adds streaming args if streaming is enabled. Uses base class helper
+        to insert args before -p flag (Gemini CLI requires -p to be
+        immediately followed by its argument).
 
         Args:
             is_deliberation: True if running as part of a deliberation
@@ -68,23 +70,16 @@ class GeminiAdapter(BaseCLIAdapter):
         """
         args = self.args.copy()
 
-        # Add streaming args if streaming is enabled
         if self.use_streaming:
-            # Find insertion point: BEFORE -p flag (not before {prompt})
-            # Gemini CLI requires -p to be immediately followed by its argument
+            # Insert before -p flag (not between -p and {prompt})
             # Wrong: -p --output-format stream-json {prompt}
             # Right: --output-format stream-json -p {prompt}
-            insert_idx = 0
-            if "-p" in args:
-                insert_idx = args.index("-p")
-            elif "{prompt}" in args:
-                # Fallback: insert before prompt placeholder
-                insert_idx = args.index("{prompt}")
-
-            # Insert streaming args in order (reversed for correct order after inserts)
-            for arg in reversed(self.STREAMING_ARGS):
-                if arg not in args:
-                    args.insert(insert_idx, arg)
+            args = self._insert_streaming_args(
+                args,
+                self.STREAMING_ARGS,
+                before_flag="-p",
+                fallback_placeholder="{prompt}",
+            )
 
         return args
 

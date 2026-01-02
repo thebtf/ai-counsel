@@ -67,7 +67,8 @@ class CodexAdapter(BaseCLIAdapter):
         """
         Adjust arguments based on context.
 
-        Adds streaming args if streaming is enabled.
+        Adds streaming args if streaming is enabled. Uses base class helper
+        to insert args before the prompt placeholder.
 
         Args:
             is_deliberation: True if running as part of a deliberation
@@ -77,16 +78,13 @@ class CodexAdapter(BaseCLIAdapter):
         """
         args = self.args.copy()
 
-        # Add streaming args if streaming is enabled
         if self.use_streaming:
-            for arg in self.STREAMING_ARGS:
-                if arg not in args:
-                    # Insert streaming args before the prompt placeholder
-                    if "{prompt}" in args:
-                        prompt_idx = args.index("{prompt}")
-                        args.insert(prompt_idx, arg)
-                    else:
-                        args.append(arg)
+            args = self._insert_streaming_args(
+                args,
+                self.STREAMING_ARGS,
+                before_flag=None,  # Codex doesn't have a flag like -p
+                fallback_placeholder="{prompt}",
+            )
 
         return args
 
