@@ -561,7 +561,7 @@ class TestDecisionGraphConfig:
         # Verify it's a string, not a Path object
         assert isinstance(config.db_path, str), "db_path should be returned as string"
 
-    def test_db_path_absolute_unchanged(self, project_root, tmp_path):
+    def test_db_path_absolute_unchanged(self, tmp_path):
         """
         Test that absolute paths are kept unchanged.
 
@@ -583,7 +583,7 @@ class TestDecisionGraphConfig:
             config.db_path == absolute_path
         ), f"Absolute path should be preserved unchanged"
 
-    def test_db_path_with_env_var(self, project_root, monkeypatch, tmp_path):
+    def test_db_path_with_env_var(self, monkeypatch, tmp_path):
         """
         Test that environment variables are resolved before path resolution.
 
