@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Literal, Optional, cast
 
 from pydantic import ValidationError
 
@@ -38,6 +38,10 @@ if TYPE_CHECKING:
     from deliberation.transcript import TranscriptManager
     from deliberation.tools import ToolExecutor
     from models.schema import DeliberateRequest, DeliberationResult
+
+# Type alias for MCP progress callback
+# Signature: async def(progress: float, total: float | None, message: str | None) -> None
+ProgressCallback = Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
 
 
 class DeliberationEngine:
@@ -1036,12 +1040,19 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
 
         return False
 
-    async def execute(self, request: "DeliberateRequest") -> "DeliberationResult":
+    async def execute(
+        self,
+        request: "DeliberateRequest",
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> "DeliberationResult":
         """
         Execute full deliberation with multiple rounds and optional convergence detection.
 
         Args:
             request: Deliberation request containing question, participants, rounds, and mode
+            progress_callback: Optional async callback for reporting progress to MCP client.
+                Signature: async def(progress: float, total: float | None, message: str | None)
+                Called at key points: start, each round, completion.
 
         Returns:
             Complete deliberation result with optional convergence_info
@@ -1115,9 +1126,19 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
         converged = False
         model_controlled_stop = False
 
+        # Report progress: deliberation starting (after rounds_to_execute is known)
+        if progress_callback:
+            await progress_callback(0, rounds_to_execute, "Starting deliberation")
+
         for round_num in range(1, rounds_to_execute + 1):
             round_start = datetime.now()
             progress_logger.info(f"📍 ROUND {round_num}/{rounds_to_execute} START")
+
+            # Report progress: round starting
+            if progress_callback:
+                await progress_callback(
+                    round_num - 1, rounds_to_execute, f"Starting round {round_num}"
+                )
 
             try:
                 # Execute round with timeout protection (5 min per round max)
@@ -1201,6 +1222,12 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
                     progress_logger.info(
                         f"   ✅ {r.participant}: {len(r.response)} chars"
                     )
+
+            # Report progress: round completed
+            if progress_callback:
+                await progress_callback(
+                    round_num, rounds_to_execute, f"Round {round_num} complete"
+                )
 
             # Check for model-controlled early stopping
             # Use config minimum rounds, not request rounds, for respect_min_rounds
@@ -1463,5 +1490,11 @@ TOOL_REQUEST: {"name": "search_code", "arguments": {"pattern": "class.*Adapter",
             progress_logger.info("   Issues: None")
         progress_logger.info(f"   Transcript: {result.transcript_path}")
         progress_logger.info("=" * 70)
+
+        # Report progress: deliberation complete
+        if progress_callback:
+            await progress_callback(
+                rounds_to_execute, rounds_to_execute, "Deliberation complete"
+            )
 
         return result

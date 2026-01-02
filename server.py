@@ -20,7 +20,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -92,6 +92,61 @@ def truncate_debate_rounds(result: DeliberationResult, max_rounds: int = 3) -> d
         result_dict["full_debate_truncated"] = False
 
     return result_dict
+
+
+# Type alias for progress callback
+# Signature: async def(progress: float, total: float | None, message: str | None) -> None
+ProgressCallback = Callable[[float, Optional[float], Optional[str]], Awaitable[None]]
+
+
+def create_progress_callback() -> Optional[ProgressCallback]:
+    """Create a progress callback from the current MCP request context.
+
+    Extracts progressToken from the request metadata and returns a callback
+    that sends progress notifications to the MCP client. Returns None if
+    no progressToken is available (client doesn't support progress).
+
+    Returns:
+        Async callback function or None if progress not supported.
+    """
+    try:
+        ctx = app.request_context
+        meta = ctx.meta
+        if meta is None or meta.progressToken is None:
+            logger.debug("No progressToken in request - progress notifications disabled")
+            return None
+
+        progress_token = meta.progressToken
+        session = ctx.session
+
+        async def report_progress(
+            progress: float,
+            total: Optional[float] = None,
+            message: Optional[str] = None,
+        ) -> None:
+            """Send progress notification to MCP client."""
+            try:
+                await session.send_progress_notification(
+                    progress_token=progress_token,
+                    progress=progress,
+                    total=total,
+                    message=message,
+                )
+                logger.debug(f"Progress sent: {progress}/{total} - {message}")
+            except Exception as e:
+                # Don't fail the operation if progress notification fails
+                logger.warning(f"Failed to send progress notification: {e}")
+
+        logger.info(f"Progress notifications enabled with token: {progress_token}")
+        return report_progress
+
+    except LookupError:
+        # Called outside request context
+        logger.debug("No request context - progress notifications disabled")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to create progress callback: {e}")
+        return None
 
 
 # Initialize server
@@ -654,9 +709,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         mcp_timeout = config.mcp.response_timeout
         logger.info(f"Starting deliberation with MCP timeout: {mcp_timeout}s")
 
+        # Create progress callback for MCP client notifications
+        progress_callback = create_progress_callback()
+
         try:
             result = await asyncio.wait_for(
-                engine.execute(request),
+                engine.execute(request, progress_callback=progress_callback),
                 timeout=mcp_timeout
             )
             logger.info(
