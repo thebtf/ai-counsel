@@ -4,13 +4,25 @@
 
 # AI Counsel
 
-[![Run in Smithery](https://smithery.ai/badge/skills/blueman82)](https://smithery.ai/skills?ns=blueman82&utm_source=github&utm_medium=badge)
+> ⚠️ **Private Fork Notice**
+>
+> This is a private fork of [blueman82/ai-counsel](https://github.com/blueman82/ai-counsel) maintained for personal use.
+> Key modifications include:
+> - **Activity-based timeout** for CLI adapters (prevents premature kills for slow models)
+> - **Streaming heartbeat detection** for reliable hang detection
+> - **MCP progress notifications** for real-time deliberation status
+> - **Detailed timing info** in deliberation results
+> - **Windows compatibility** fixes
+> - **Custom HTTP adapters** (nvmdapi, nvmdapicli) for local infrastructure
+>
+> For the original project, visit the upstream repository.
 
+---
 
 True deliberative consensus MCP server where AI models debate and refine positions across multiple rounds.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
 ![MCP](https://img.shields.io/badge/MCP-Server-green.svg)
 ![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)
@@ -135,7 +147,7 @@ For model choices and picker workflow, see [Model Registry & Picker](docs/model-
 ### Setup
 
 ```bash
-git clone https://github.com/blueman82/ai-counsel.git
+git clone https://github.com/thebtf/ai-counsel.git
 cd ai-counsel
 python3 -m venv .venv
 source .venv/bin/activate  # macOS/Linux; Windows: .venv\Scripts\activate
@@ -541,11 +553,14 @@ Inspired by the need for true deliberative AI consensus beyond parallel opinion 
 
 ## Status
 
-![GitHub stars](https://img.shields.io/github/stars/blueman82/ai-counsel)
-![GitHub forks](https://img.shields.io/github/forks/blueman82/ai-counsel)
-![GitHub last commit](https://img.shields.io/github/last-commit/blueman82/ai-counsel)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen)
-![Tests](https://img.shields.io/badge/tests-130%2B%20passing-green)
-![Version](https://img.shields.io/badge/version-1.2.1-blue)
+![Tests](https://img.shields.io/badge/tests-1001%20passing-green)
+![Version](https://img.shields.io/badge/version-fork--2.0-blue)
 
-**Production Ready** - Multi-model deliberative consensus with cross-user decision graph memory, structured voting, and adaptive early stopping for critical technical decisions!
+**Production Ready** - Multi-model deliberative consensus with:
+- Cross-user decision graph memory
+- Structured voting with confidence levels
+- Activity-based timeout for reliable model execution
+- MCP progress notifications for real-time status
+- Detailed timing breakdown per participant/round
+- Windows + macOS + Linux support
